@@ -1,0 +1,850 @@
+---
+title: "Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+```{r}
+# libraries
+library(rstan)
+library(brms)
+library(modelr)
+library(tidyverse)
+library(tidybayes)
+library(cmdstanr)
+library(bayesplot)
+library(posterior)
+library(bridgesampling)
+library(gridExtra)
+library(grid)
+library(ggrepel)
+
+# additional generic utility functions
+source("utils/plotting.R")
+source("utils/bayes.R")
+source("utils/tex.R")
+
+# project-specific helper functions
+source("helper/create_stan_data.R")
+source("helper/activity_distribution.R")
+source("helper/stan_sampling.R")
+```
+
+## Data
+
+```{r}
+# load preprocessed data
+df <- read.csv('data/preprocessed/data.csv', stringsAsFactors = F) %>%
+  mutate(country = ifelse(rcpt == "COG", "Republic of the Congo", ifelse(rcpt == "GMB", "Gambia", country)))
+#' rcpt = ISO-3 country code
+#' year = year
+#' std = official development assistance (ODA) funding for sexually transmitted diseases
+#' dom = domestic funding for HIV
+#' edu = education
+#' gdp = log gross domestic product per capita
+#' pop = population
+#' dens = log population density
+#' mat = maternal mortality per capita
+#' fd_* = first difference of control variables (log changes for all but education)
+#' hiv_new_* = new infections with HIV by age group
+#' hiv_living_* = people living with HIV by age group
+#' hiv_incidence_* = incidence with HIV by age group
+
+# filter data with low incidence or too few years of observation
+# create data list as input to STAN
+stan_data <- create_stan_data(df, pa_method = "lnorm")
+```
+
+
+## Descriptives
+
+### Summary table
+
+- Descriptive summaries of funding and changes in HIV by country
+
+```{r}
+# descriptive summaries by country
+descr_tbl <- stan_data$dat_filt %>%
+  group_by(rcpt, country) %>%
+  summarize(d_hiv = 100 * log(hiv_new[n()] / hiv_new[1]),
+            tot_dom = sum(dom) / 1e3,
+            tot_aid = sum(std) / 1e3,
+            tot_aid_pipa = sum(std / hiv_living) / n(),
+            tot_dom_pipa = sum(dom / hiv_living) / n(),
+            tot_fund_pipa = sum((dom + std) / hiv_living) / n()) %>%
+  ungroup() 
+
+# descriptive summaries overall
+sum(descr_tbl$tot_aid) / 1e6; sum(descr_tbl$tot_dom) / 1e6
+quantile(descr_tbl$tot_aid_pipa, .25); mean(descr_tbl$tot_aid_pipa); quantile(descr_tbl$tot_aid_pipa, .75);
+quantile(descr_tbl$tot_dom_pipa, .25); mean(descr_tbl$tot_dom_pipa); quantile(descr_tbl$tot_dom_pipa, .75);
+quantile(descr_tbl$tot_fund_pipa, .25); mean(descr_tbl$tot_fund_pipa); quantile(descr_tbl$tot_fund_pipa, .75);
+
+# create table for descriptives summaries by countries
+descr_tbl <- descr_tbl %>%
+  left_join(df %>% group_by(rcpt) %>% slice(1) %>% dplyr::select(rcpt, country))  %>%
+  dplyr::select(rcpt, country, d_hiv, tot_aid, tot_dom) %>%
+  mutate_at(vars(tot_aid, tot_dom), function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) %>%
+  mutate(d_hiv = format(round(d_hiv, 1), nsmall = 1)) %>%
+  mutate(d_hiv = ifelse(grepl("-", d_hiv), gsub("-", "$-$", d_hiv), paste0("$\\hphantom{-}$", d_hiv))) %>%
+  mutate(d_hiv = ifelse(rcpt == "MUS", paste0(d_hiv, "$^{\\dagger}$"), d_hiv))
+
+# save table
+xtable::print.xtable(
+  file = "results/descriptives_by_country.tex",
+  xtable::xtable(
+    descr_tbl
+  ),
+  only.contents = T,
+  include.colnames = F,
+  include.rownames = F,
+  sanitize.text.function = identity,
+  hline.after = NULL
+)
+```
+
+### HIV & Funding
+
+- Showing changes in HIV, funding, and share of aid in total funding over time
+
+```{r}
+# descriptive data
+descr_df <- stan_data$dat_filt %>%
+  mutate(hiv = hiv_inci) %>%
+  mutate(tf_pc = (std + dom) / hiv_living / 1e3,
+         aid_pc = (std) / hiv_living / 1e3,
+         dom_pc = (dom) / hiv_living / 1e3,
+         share = std / (std + dom)) %>%
+  dplyr::select(rcpt, country, year, hiv, tf_pc, aid_pc, dom_pc, share)
+
+# highlight top/bottom countries
+highest_hiv <- descr_df %>% 
+  dplyr::filter(year == 2018) %>% 
+  arrange(desc(hiv)) %>% 
+  dplyr::select(country) %>% 
+  slice(1:8) %>% 
+  unlist
+highest_tf <- descr_df %>% 
+  dplyr::filter(year == 2018) %>% 
+  arrange(desc(tf_pc)) %>% 
+  dplyr::select(country) %>% 
+  slice(1:8) %>% 
+  unlist
+highest_aid <- descr_df %>% 
+  dplyr::filter(year == 2018) %>% 
+  arrange(desc(aid_pc)) %>% 
+  dplyr::select(country) %>% 
+  slice(1:8) %>% 
+  unlist
+highest_dom <- descr_df %>% 
+  dplyr::filter(year == 2018) %>% 
+  arrange(desc(dom_pc)) %>% 
+  dplyr::select(country) %>% 
+  slice(1:8) %>% 
+  unlist
+highest_share <- descr_df %>% 
+  group_by(country) %>% 
+  summarize(share = mean(share)) %>% 
+  arrange(desc(share)) %>% 
+  dplyr::select(country) %>% 
+  slice(c(1:4, (n()-3):n())) %>% 
+  unlist
+
+# add labels
+descr_df <- descr_df %>%
+  mutate(sub_rcpt = ifelse(country %in% highest_hiv, rcpt, NA),
+         sub_rcpt_tf = ifelse(country %in% highest_tf, rcpt, NA),
+         sub_rcpt_aid = ifelse(country %in% highest_aid, rcpt, NA),
+         sub_rcpt_dom = ifelse(country %in% highest_dom, rcpt, NA),
+         sub_rcpt_share = ifelse(country %in% highest_share, rcpt, NA))
+
+# create time series plots
+w_descr_pl = 14; h = h_descr_pl = 10
+
+# create HIV plot
+descr_hiv_pl <- ggplot(descr_df, aes(x = year, y = hiv, group = country, color = sub_rcpt)) +
+  geom_line() +
+  geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt)), aes(label = country), 
+                  size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 25, 5), limits = c(0, 27)) +
+  scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
+  coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
+  labs(y = "HIV (new infections per 1,000 population)") +
+  theme_bw2() +
+  theme(legend.position = "none", axis.title.x = element_blank()) 
+
+# save plot
+save_plot(descr_hiv_pl, "results/descr_hiv.pdf", w = w_descr_pl, h = h_descr_pl)
+
+# create total funding plot
+descr_funding_pl <- ggplot(descr_df, aes(x = year, y = tf_pc, group = country, color = sub_rcpt_tf)) +
+  geom_line() +
+  geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt_tf)), aes(label = country), 
+                  size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 2, .5), limits = c(0, 1.7),
+                     labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+  scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
+  coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
+  labs(y = "Funding for HIV (USD per infected)") +
+  theme_bw2() +
+  theme(legend.position = "none", axis.title.x = element_blank()) 
+
+# save plot
+save_plot(descr_funding_pl, "results/descr_tot_funding.pdf", w = w_descr_pl, h = h_descr_pl)
+
+
+# create ODA plot
+descr_aid_pl <- ggplot(descr_df, aes(x = year, y = aid_pc, group = country, color = sub_rcpt_aid)) +
+  geom_line() +
+  geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt_aid)), aes(label = country), 
+                  size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 1.25, .25), limits = c(0, 1.25),
+                     labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+  scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
+  coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
+  labs(y = "ODA for HIV (USD per infected)") +
+  theme_bw2() +
+  theme(legend.position = "none", axis.title.x = element_blank()) 
+
+# save plot
+save_plot(descr_aid_pl, "results/descr_aid_funding.pdf", w = w_descr_pl, h = h_descr_pl)
+
+# create domestic funding plot
+descr_dom_pl <- ggplot(descr_df, aes(x = year, y = dom_pc, group = country, color = sub_rcpt_dom)) +
+  geom_line() +
+  geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt_dom)), aes(label = country), 
+                  size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 1, .25), limits = c(0, 1),
+                     labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+  scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
+  coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
+  labs(y = "Domestic funding for HIV (USD per infected)") +
+  theme_bw2() +
+  theme(legend.position = "none", axis.title.x = element_blank()) 
+
+# save plot
+save_plot(descr_dom_pl, "results/descr_dom_funding.pdf", w = w_descr_pl, h = h_descr_pl)
+
+
+# create share of aid in total funding plot
+descr_share_pl <- ggplot(descr_df, aes(x = year, y = share, group = rcpt, color = sub_rcpt_share)) +
+  geom_line() +
+  geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt_share)), aes(label = country), 
+                  size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 1, .25), limits = c(0, 1), labels = seq(0, 100, 25)) +
+  scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
+  coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
+  labs(y = "Share of ODA in total funding (%)") +
+  theme_bw2() +
+  theme(legend.position = "none", axis.title.x = element_blank()) 
+
+# save plot
+save_plot(descr_share_pl, "results/descr_share_funding.pdf", w = w_descr_pl, h = h_descr_pl)
+```
+
+### Linear association 
+
+- Linear association between the change in HIV and total funding
+
+```{r}
+# compute changes in HIV and total funding
+df_summary <- stan_data$dat_filt %>%
+  group_by(rcpt, country) %>%
+  summarize(d_hiv = 100 * log(hiv_new[n()] / hiv_new[1]),
+            hiv_start = hiv_inci[1],
+            tot_hiv = sum(hiv_living),
+            tot_dom = sum(dom),
+            tot_aid = sum(std)) %>%
+  ungroup() %>% 
+  mutate(tot_fund = (tot_dom + tot_aid) / tot_hiv)
+
+# linear model to estimate association
+lin_mod <- brm(d_hiv ~ tot_fund, data = df_summary, seed = 12345)
+
+# add linear fitted draws
+lin_mod_fit <- df_summary %>%
+  data_grid(tot_fund = seq_range(c(0, 1.2) * 1000, 101)) %>%
+  add_linpred_draws(lin_mod, ndraws = 4000) 
+
+# create plot
+cor_pl <- ggplot() +
+  stat_lineribbon(data = lin_mod_fit, mapping = aes(x = tot_fund, y = .linpred), .width = c(.95, .8), alpha = .4, 
+                  color = "skyblue2") +
+  scale_fill_brewer(labels = c("95%", "80%")) +
+  geom_point(data = df_summary, mapping = aes(x = tot_fund, y = d_hiv, size = hiv_start), alpha = .4) +
+  geom_text_repel(data = df_summary, mapping = aes(x = tot_fund, y = d_hiv, size = hiv_start, label = country), 
+                  size = 6 / cm(1)) +
+  scale_size(breaks = seq(0, 30, 6)) +
+  geom_hline(aes(yintercept = 0), linetype = "dotted") +
+  scale_x_continuous(breaks = seq(0, 1.25, 0.25) * 1000, limits = c(0, 1.2) * 1000, expand = c(0,0),
+                     labels=function(x) format(x, big.mark = ".", scientific = FALSE)) +
+  scale_y_continuous(breaks = seq(-150, 25, 25), limits = c(-140, 25), expand = c(0,0)) +
+  labs(x = "Total funding for HIV control measures (USD per infected)", 
+       y = "Change in number of new infections with HIV (%)",
+       size = "HIV in 2003 (new infections per 1,000 population)",
+       fill = "CrI") +
+  theme_bw2() +
+  theme(legend.position = "top")
+
+# save plot
+save_plot(cor_pl, "results/descr_cor.pdf", w = 16, h = 12)
+```
+
+
+## Model and results
+
+### Prior
+
+- Prior(s) for activity distribution
+
+```{r}
+fund_names <- c("ODA", "Domestic funding")
+pa_default <- c(2.0, 0.25, 0.5, 0.1)
+pa_diff_default_aid <- c(0.5, 0.25)
+pa_diff_default_dom <- c(-0.5, 0.25)
+  
+# Main prior
+pa_prior_aid <- p_a.prior(method = "norm", pa = pa_default, pa_diff = pa_diff_default_aid) 
+pa_prior_dom <- p_a.prior(method = "norm", pa = pa_default, pa_diff = pa_diff_default_dom) 
+pa_prior <- rbind(pa_prior_aid, pa_prior_dom) %>%
+  mutate(type = factor(rep(fund_names, each = nrow(pa_prior_aid)), levels = fund_names))
+
+# create plot
+prior_pa_pl <- ggplot(pa_prior, aes(x = year)) +
+  geom_line(aes(y = .mean, color = type)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = type), alpha = .1) +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_d() +
+  labs(x = "t (years)", y = expression(p[RA]*"(t)")) +
+  theme_bw2() +
+  theme(legend.position = "top", legend.title = element_blank())
+
+# save plot
+save_plot(prior_pa_pl, "results/prior_pa.pdf", w = 8, h = 6)
+
+# Priors for sensitivity analysis
+sens_levs <- c("Very short (1 year)", "Short (1.5 years)", "Default (2 years)", "Long (2.5 years)", "Very long (3 years)")
+pa_prior_very_short_aid <- p_a.prior(method = "norm", pa = c(1.0, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_aid) 
+pa_prior_short_aid <- p_a.prior(method = "norm", pa = c(1.5, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_aid) 
+pa_prior_long_aid <- p_a.prior(method = "norm", pa = c(2.5, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_aid) 
+pa_prior_very_long_aid <- p_a.prior(method = "norm", pa = c(3.0, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_aid) 
+pa_prior_very_short_dom <- p_a.prior(method = "norm", pa = c(1.0, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_dom) 
+pa_prior_short_dom <- p_a.prior(method = "norm", pa = c(1.5, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_dom) 
+pa_prior_long_dom <- p_a.prior(method = "norm", pa = c(2.5, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_dom) 
+pa_prior_very_long_dom <- p_a.prior(method = "norm", pa = c(3.0, 0.25, 0.5, 0.1), pa_diff = pa_diff_default_dom) 
+pa_sens <- rbind(pa_prior_very_short_aid, pa_prior_short_aid, pa_prior_aid, pa_prior_long_aid, pa_prior_very_long_aid,
+                 pa_prior_very_short_dom, pa_prior_short_dom, pa_prior_dom, pa_prior_long_dom, pa_prior_very_long_dom) %>%
+  mutate(type = factor(rep(sens_levs, each = nrow(pa_prior_aid), times = 2), levels = sens_levs)) %>%
+  mutate(ftype = factor(rep(fund_names, each = nrow(.) / 2), levels = fund_names))
+
+# create plot
+prior_pa_sens_pl <- ggplot(pa_sens, aes(x = year)) +
+  geom_line(aes(y = .mean, color = ftype)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = ftype), alpha = .1) +
+  facet_wrap(~ type, ncol = 2) +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_d() +
+  labs(x = "t (years)", y = expression(p[RA]*"(t)")) +
+  theme_bw2() +
+  theme(legend.position = "top", legend.title = element_blank())
+
+# save plot
+save_plot(prior_pa_sens_pl, "results/prior_sens_pa.pdf", w = 16, h = 16)
+```
+
+### Estimation results
+
+- Estimation results for main model parameters
+
+```{r}
+# load model results
+fit <- read_cmdstan_csv(list.files("fitted-models/main/", pattern = "main", full.names = T))
+
+# parameter summaries
+post_summary(fit, c("mu_p_a", "sigma_p_a", "diff_mu_p_a"))
+post_summary(fit, c("theta", "theta_share")) %>%
+  mutate_at(vars(mean, median, `q2.5`, `q97.5`), function(x) round(100 * (1 - exp(x))))
+post_summary(fit, c("alpha", "tau"))
+post_summary(fit, paste0("phi[",1:3,"]"))
+post_summary(fit, c("zeta[1]", "zeta[2]", "zeta[3]", "zeta[4]"))
+
+# posterior corr between important parameters
+fit$post_warmup_draws[,,c("theta", "mu_p_a", "sigma_p_a", "diff_mu_p_a")] %>%
+  as_draws_df() %>%
+  data.frame() %>%
+  dplyr::select(-.draw, -.iteration, -.chain) %>%
+  cor() %>%
+  round(2)
+
+# posterior vs prior for activity distribution
+p_a.posterior_plot(fit, stan_data$model_start+1, 2)
+pa_post_prior_aid <- p_a.prior_vs_posterior(fit, stan_data$model_start+1)
+save_plot(pa_post_prior_aid, "results/prior_vs_posterior_pa_aid.pdf", w = 8, h = 6)
+pa_post_prior_dom <- p_a.prior_vs_posterior(fit, stan_data$model_start+1, 2, pa_diff = c(-0.5, 0.25))
+save_plot(pa_post_prior_dom, "results/prior_vs_posterior_pa_dom.pdf", w = 8, h = 6)
+
+# estimation results 
+est_results <- data.frame(
+  parameter = c("alpha", "tau", "theta", "theta_share", "zeta[1]", "zeta[2]", "zeta[3]", "zeta[4]",
+                "mu_p_a", "sigma_p_a", "diff_mu_p_a", "phi[1]", "phi[2]", "phi[3]"),
+  par_name = c("$\\alpha$", "$\\tau$", "$\\theta$", "$\\theta_s$", "$\\zeta_1$", "$\\zeta_2$", "$\\zeta_3$", "$\\zeta_4$",
+               "$\\mu_{RA}$", "$\\sigma_{RA}$", "$\\Delta_{RA}$", "$\\phi_A$", "$\\phi_D$", "$\\phi_I$"),
+  stringsAsFactors = F
+) %>%
+  mutate(
+    mean = post_summary(fit, parameter)[["mean"]],
+    lower = post_summary(fit, parameter)[["q2.5"]],
+    upper = post_summary(fit, parameter)[["q97.5"]],
+    neff = map_dbl(parameter, function(x) ess_bulk(fit$post_warmup_draws[,,x])),
+    rhat = map_dbl(parameter, function(x) rhat(fit$post_warmup_draws[,,x]))
+  ) %>%
+  mutate_at(vars(mean, lower, upper, rhat), round_k, 2) %>%
+  mutate(neff = round_k(neff, 0)) %>%
+  dplyr::select(-parameter)
+
+# save estimation results
+xtable::print.xtable(
+  file = "results/estimation_results.tex",
+  xtable::xtable(
+    est_results
+  ),
+  only.contents = T,
+  include.colnames = F,
+  include.rownames = F,
+  sanitize.text.function = identity,
+  hline.after = NULL
+)
+
+# influential observations
+plot_influential.ragged_mat(fit, nrow(stan_data$dat_model), stan_data$dat_model$year, stan_data$dat_model$rcpt,
+                            "results/influential.pdf", w = 16, h = 24)
+```
+
+### Model fit
+
+- Posterior draws for fitted HIV and active funding
+
+```{r}
+# initialize array
+df_model <- stan_data$dat_model %>%
+  mutate(pred_hiv_new.mean = -999,
+         pred_hiv_new.lower = -999,
+         pred_hiv_new.upper = -999,
+         pred_active_std.mean = -999,
+         pred_active_std.lower = -999,
+         pred_active_std.upper = -999,
+         pred_active_dom.mean = -999,
+         pred_active_dom.lower = -999,
+         pred_active_dom.upper = -999)
+
+recipients <- unique(df_model$rcpt)
+
+# get posterior draws
+for (r in 1:length(recipients)) {
+  print(r)
+  if (r == 1) {
+    idx <- (stan_data$cum_N[r]+1):(stan_data$cum_N[r+1]-stan_data$model_start*r)
+  } else {
+    idx <- (stan_data$cum_N[r]-stan_data$model_start*(r-1)+1):(stan_data$cum_N[r+1]-stan_data$model_start*r)
+  }
+  hiv_new_pred_draws <- fit$post_warmup_draws[,,paste0("hiv_new_me[",idx,"]")] %>%
+    as_draws_df() %>%
+    data.frame() %>% 
+    reshape2::melt(c(".chain",".iteration",".draw")) %>%
+    mutate(variable = as.numeric(stringi::stri_extract(variable, regex = "\\d{1,3}"))) %>%
+    group_by(variable) %>%
+    mean_qi() %>%
+    ungroup() %>%
+    arrange(variable)
+  active_std_pred_draws <- fit$post_warmup_draws[,,paste0("mu_active_funding[",idx,",1]")] %>%
+    as_draws_df() %>%
+    data.frame() %>% 
+    reshape2::melt(c(".chain",".iteration",".draw")) %>%
+    mutate(variable = as.numeric(stringi::stri_extract(variable, regex = "\\d{1,3}"))) %>%
+    group_by(variable) %>%
+    mean_qi() %>%
+    ungroup() %>%
+    arrange(variable)
+  active_dom_pred_draws <- fit$post_warmup_draws[,,paste0("mu_active_funding[",idx,",2]")] %>%
+    as_draws_df() %>%
+    data.frame() %>% 
+    reshape2::melt(c(".chain",".iteration",".draw")) %>%
+    mutate(variable = as.numeric(stringi::stri_extract(variable, regex = "\\d{1,3}"))) %>%
+    group_by(variable) %>%
+    mean_qi() %>%
+    ungroup() %>%
+    arrange(variable)
+  df_model[df_model$rcpt==recipients[r],"pred_hiv_new.mean"] <- hiv_new_pred_draws$value
+  df_model[df_model$rcpt==recipients[r],"pred_hiv_new.lower"] <- hiv_new_pred_draws$.lower
+  df_model[df_model$rcpt==recipients[r],"pred_hiv_new.upper"] <- hiv_new_pred_draws$.upper
+  df_model[df_model$rcpt==recipients[r],"pred_active_std.mean"] <- active_std_pred_draws$value
+  df_model[df_model$rcpt==recipients[r],"pred_active_std.lower"] <- active_std_pred_draws$.lower
+  df_model[df_model$rcpt==recipients[r],"pred_active_std.upper"] <- active_std_pred_draws$.upper
+  df_model[df_model$rcpt==recipients[r],"pred_active_dom.mean"] <- active_dom_pred_draws$value
+  df_model[df_model$rcpt==recipients[r],"pred_active_dom.lower"] <- active_dom_pred_draws$.lower
+  df_model[df_model$rcpt==recipients[r],"pred_active_dom.upper"] <- active_dom_pred_draws$.upper
+}
+```
+
+
+### Avoided infections
+
+- Estimated number of avoided infections from funding for HIV
+
+```{r}
+# initialize arrays
+inf_none <- array(NA, c(max(stan_data$rcpt_id$cid), (stan_data$max_N-stan_data$model_start), 4000))
+inf_tot <- array(NA, c(max(stan_data$rcpt_id$cid), (stan_data$max_N-stan_data$model_start), 4000))
+act_fund_tot <- array(NA, c(max(stan_data$rcpt_id$cid), (stan_data$max_N-stan_data$model_start), 4000))
+
+# get posterior draws
+for (r in stan_data$rcpt_id$cid) {
+  for (y in 1:(stan_data$max_N-stan_data$model_start)) {
+    inf_none[r,y, ] <- c(as_draws_matrix(fit$post_warmup_draws[,,paste0("mu_hiv_new_none[",y,",",r,"]")]))
+    inf_tot[r,y, ] <- c(as_draws_matrix(fit$post_warmup_draws[,,paste0("mu_hiv_new_funding[",y,",",r,"]")]))
+    act_fund_tot[r,y, ] <- c(as_draws_matrix(fit$post_warmup_draws[,,paste0("active_funding_tot[",y,",",r,"]")]))
+  }
+}
+
+# compute cumulative infections
+inf_none_tot <- apply(inf_none, c(1,3), sum, na.rm = T)
+inf_tot_tot <- apply(inf_tot, c(1,3), sum, na.rm = T)
+
+# compute annual funding
+act_fund_tot <- apply(act_fund_tot, c(1,3), sum, na.rm = T)
+act_fund_tot_mean <- rowMeans(act_fund_tot)
+
+# compute avoided infections
+av_inf <- (inf_none_tot - inf_tot_tot) / inf_none_tot * 100
+av_inf_df <- data.frame(t(av_inf)) %>%
+  set_names(stan_data$rcpt_id$group) %>%
+  mutate(.draw = 1:nrow(.)) %>%
+  reshape2::melt(".draw") %>% 
+  left_join(data.frame(variable = unique(.$variable), tot_active_funding = act_fund_tot_mean)) %>%
+  rename(rcpt = variable) %>%
+  left_join(stan_data$dat_filt %>% group_by(rcpt, country) %>% slice(1) %>% dplyr::select(rcpt, country))
+
+# create plot
+av_inf_tot_pl <- av_inf_df %>% 
+  ggplot(aes(y = country, x = value, color = tot_active_funding)) +
+  stat_pointinterval(shape = 21, fill = "white", point_size = 2, .width = c(0.8, 0.95)) +
+  geom_vline(aes(xintercept = 0), linetype = "dotted", color = "grey") +
+  scale_color_viridis_c(breaks = seq(0, 15, 5), limits = c(0, 15), 
+                        labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+  labs(x = "Estimated expected total number of avoided infections with HIV (%)", 
+       color = "Estimated expected total active funding for HIV (USD per infected)") +
+  theme_bw2() +
+  theme(axis.title.y = element_blank()) +
+  theme(legend.position = "top")
+
+panel_width = unit(1,"npc") - sum(ggplotGrob(av_inf_tot_pl)[["widths"]][-3]) - unit(1,"line")
+av_inf_tot_pl <- av_inf_tot_pl + guides(color = guide_colorbar(barwidth = panel_width, title.position = "top", title.hjust = 0.5))
+
+# save plot
+save_plot(av_inf_tot_pl, "results/avoided_tot.pdf", w = 12, h = 16)
+```
+
+### Funding needed
+
+- Estimated funding needed to end HIV
+
+```{r}
+# estimated mean effect
+mean_effect <- post_summary(fit, "theta")$mean
+  
+# incidence in 2010
+incidence_start <- stan_data$dat_filt %>% 
+  dplyr::select(rcpt, country, year, hiv_new, hiv_inci, pop) %>%
+  group_by(rcpt, country) %>%
+  slice(1) %>%
+  ungroup() %>%
+  mutate(hiv_inc_sta = hiv_inci) %>%
+  rename(hiv_new_sta = hiv_new)
+
+# current/latest incidence (for almost all countries this is 2018)
+incidence_current <- stan_data$dat_filt %>% 
+  dplyr::select(rcpt, country, year, hiv_new, hiv_inci, pop) %>%
+  group_by(rcpt, country) %>%
+  slice(n()) %>%
+  ungroup() %>%
+  mutate(hiv_inc_cur = hiv_inci) %>%
+  rename(hiv_new_cur = hiv_new)
+
+# funding between 2010 and 2018
+funding_so_far <- df_model %>%
+  dplyr::filter(year >= 2010 & year <= 2018) %>%
+  group_by(rcpt) %>%
+  summarize(active_funding_per_infected = 1 / 1e3 * mean( (pred_active_std.mean + pred_active_dom.mean) / hiv_living))
+
+
+# population projections for 2030 from the United Nations
+ppop30_raw <- read_csv("data/raw/un_pop_proj_2030.csv") %>%
+  mutate(country = ifelse(country == "Côte d'Ivoire", "Cote d'Ivoire",
+                          ifelse(country == "Congo", "Republic of the Congo",
+                                  ifelse(country == "United Republic of Tanzania", "Tanzania", country)))) %>%
+  mutate(medium_estimate_2030 = medium_estimate_2030 * 1e3)
+ppop30 <- stan_data$dat_filt %>%
+  dplyr::select(rcpt, country) %>%
+  group_by(rcpt, country) %>%
+  slice(1) %>%
+  ungroup()
+ppop30 <- left_join(ppop30, ppop30_raw)
+
+# target incidence in 2030
+# target reduction is 90% between 2010 and 2030
+# for MUS we have to adapt as data starts in 2015
+annual_reduction <- - log(0.1) / 20
+incidence_target <- data.frame(
+  rcpt = incidence_start$rcpt,
+  country = incidence_start$country,
+  pop_tar = ppop30$medium_estimate_2030,
+  reduction = exp(- annual_reduction * (2030 - incidence_start$year))
+) %>%
+  mutate(hiv_new_tar = incidence_start$hiv_new_sta * reduction) %>%
+  mutate(hiv_inc_tar = hiv_new_tar / pop_tar * 1e3)
+
+# projections of annual funding needed to achieve target
+funding_needed <- (log(incidence_target$hiv_new_tar / incidence_current$hiv_new_cur)) / (mean_effect * 12)
+
+# combine
+fund_to_end_hiv <- data.frame(
+  rcpt = incidence_target$rcpt,
+  country = ppop30$country,
+  current_hiv_inc = incidence_current$hiv_inc_cur,
+  target_hiv_inc = incidence_target$hiv_inc_tar,
+  funding_2010_2018 = funding_so_far$active_funding_per_infected,
+  funding_to_end_hiv = funding_needed
+)
+
+# Add NAs for excluded countries
+filt_rcpt <- df %>%
+  dplyr::filter(!(rcpt %in% fund_to_end_hiv$rcpt)) %>%
+  group_by(rcpt) %>%
+  slice(1) %>%
+  ungroup() %>%
+  dplyr::select(rcpt, country) %>%
+  mutate(current_hiv_inc = NA, target_hiv_inc = NA, funding_2010_2018 = NA, funding_to_end_hiv = NA)
+fund_to_end_hiv <- rbind(fund_to_end_hiv, filt_rcpt)
+
+# save data for plotting in Python
+write_csv(fund_to_end_hiv, file = "results/funding_needed_to_end_hiv.csv")
+
+# examples
+fund_to_end_hiv %>%
+  dplyr::filter(country %in% c("Sierra Leone", "Tanzania", "Rwanda")) %>%
+  mutate_at(vars(funding_2010_2018, funding_to_end_hiv), function(x) round(x * 1000))
+
+# number of countries who need more than the double of funding
+sum((fund_to_end_hiv$funding_to_end_hiv / fund_to_end_hiv$funding_2010_2018) > 2, na.rm = T)
+```
+
+
+## Sensitivity analysis
+
+- Note: code starting from here cannot be run until sensitivity_analysis.R is run to obtain all model outputs from the sensitivity analysis
+
+```{r}
+# function to get posterior draws from model file
+get_theta_draws <- function(file, t = 'theta') {
+  m <- readRDS(file)
+  draws <- m$draws(t) %>%
+    as_draws_df() %>%
+    data.frame()
+}
+```
+
+
+### Model specification
+
+- by model specification (with year random effects or time trend)
+
+```{r}
+# with random effects for year
+main_at <- read_cmdstan_csv(list.files("fitted-models/sens/", pattern = "main_at-.*.csv", full.names = T))
+main_at_theta <- data.frame(as_draws_df(main_at$post_warmup_draws[,,"theta"])) %>%
+  mutate(type = "Including year-\nspecific effects")
+
+# with time trend
+main_trend <- read_cmdstan_csv(list.files("fitted-models/sens/", pattern = "main_trend-.*.csv", full.names = T))
+main_trend_theta <- data.frame(as_draws_df(main_trend$post_warmup_draws[,,"theta"])) %>%
+  mutate(type = "Including country-specific\nlinear time trend")
+
+# main model
+main_theta <- data.frame(as_draws_df(fit$post_warmup_draws[,,"theta"])) %>%
+  mutate(type = "Default model")
+
+# combine
+model_spec_theta <- rbind(main_theta, main_at_theta, main_trend_theta) %>%
+  mutate(type = factor(type, levels = c("Default model", 
+                                        "Including year-\nspecific effects", 
+                                        "Including country-specific\nlinear time trend"))) %>%
+  mutate(reduction = 100 * (1 - exp(theta)))
+
+# create plot
+model_spec_pl <- ggplot(model_spec_theta, aes(x = reduction, y = type)) +
+  stat_pointinterval(.width = c(.8, .95), shape = 21, point_size = 2, fill = "white") +
+  geom_vline(aes(xintercept = 0), linetype = "dotted") +
+  labs(y = "Model specification", 
+       x = "Estimated reduction in new infections with HIV (%) \n for a USD 1,000 increase in funding per infected") +
+  theme_bw2() +
+  theme(legend.position = "top")
+
+# save plot
+save_plot(model_spec_pl, "results/sens_model_spec.pdf", w = 10, h = 4)
+```
+
+
+### Funding 
+
+- by funding (only development aid or only domestic funding)
+
+```{r}
+# only development aid
+main_aid_only <- read_cmdstan_csv(list.files("fitted-models/sens/", pattern = "main_aid_only-.*.csv", full.names = T))
+main_aid_only_theta <- data.frame(as_draws_df(main_aid_only$post_warmup_draws[,,"theta"])) %>%
+  mutate(type = "ODA")
+
+# only domestic funding
+main_dom_only <- read_cmdstan_csv(list.files("fitted-models/sens/", pattern = "main_dom_only-.*.csv", full.names = T))
+main_dom_only_theta <- data.frame(as_draws_df(main_dom_only$post_warmup_draws[,,"theta"])) %>%
+  mutate(type = "Domestic funding")
+
+# main model with both types of funding
+main_total_theta <- main_theta %>%
+  mutate(type = "ODA + domestic funding")
+
+# combine
+funding_theta <- rbind(main_total_theta, main_aid_only_theta, main_dom_only_theta) %>%
+  mutate(type = factor(type, levels = c("ODA + domestic funding", "ODA", "Domestic funding"))) %>%
+  mutate(reduction = 100 * (1 - exp(theta)))
+
+# create plot
+funding_theta_pl <- ggplot(funding_theta, aes(x = reduction, y = type)) +
+  stat_pointinterval(.width = c(.8, .95), point_size = 2, shape = 21, fill = "white") +
+  geom_vline(aes(xintercept = 0), linetype = "dotted") +
+  labs(y = "Type of funding", 
+       x = "Estimated reduction in new infections with HIV (%) \n for a USD 1,000 increase in funding per infected") +
+  theme_bw2() +
+  theme(legend.position = "top")
+
+# save plot
+save_plot(funding_theta_pl, "results/sens_funding.pdf", w = 10, h = 4)
+```
+
+
+### Outcome
+
+- by outcome/target (only the adult population aged 15+ or the whole population)
+
+```{r}
+# type of outcomes
+tar_names <- c("All", "Adult 15+")
+names(tar_names) <- c("hiv_new_all", "hiv_new_adult")
+
+# get posterior draws
+sens_tar <- tibble(files = list.files("fitted-models/sens/", pattern = "tar", full.names = T)) %>%
+  mutate(tar = stringi::stri_extract(files, regex = "(?<=target-)\\w.*(?=[[:punct:]])")) %>%
+  mutate(tar = dplyr::recode(tar, !!! tar_names)) %>%
+  mutate(tar = factor(tar, levels = tar_names)) %>%
+  mutate(draws = map(files, get_theta_draws)) %>%
+  unnest() %>%
+  mutate(reduction_theta = 100 * (1 - exp(`theta`))) 
+
+# create plot
+sens_tar_theta_pl <- ggplot(sens_tar, aes(x = reduction_theta, y = tar)) +
+  stat_pointinterval(.width = c(.8, .95), point_size = 2, shape = 21,fill = "white") +
+  geom_vline(aes(xintercept = 0), linetype = "dotted") +
+  labs(y = "Age group", 
+       x = "Estimated reduction in new infections with HIV (%) \n for a USD 1,000 increase in funding per infected", 
+       color = "Delay") +
+  theme_bw2() 
+
+# save plot
+save_plot(sens_tar_theta_pl, "results/sens_tar_theta.pdf", w = 10, h = 3)
+```
+
+
+### Prior
+
+- by parametrization of the prior for the activity distribution (shorter vs longer delays)
+
+```{r}
+# type of priors for activity distributions
+par_names <- c("Very short (1 year)", "Short (1.5 years)", "Default (2 years)", "Long (2.5 years)",  "Very long (3 years)")
+names(par_names) <- c("very_early", "early", "default", "late", "very_late")
+
+# get posterior draws
+sens_par <- tibble(files = list.files("fitted-models/sens/", pattern = "par", full.names = T)) %>%
+  mutate(par = stringi::stri_extract(files, regex = "(?<=par-)\\w.*(?=[[:punct:]])")) %>%
+  mutate(par = dplyr::recode(par, !!! par_names)) %>%
+  mutate(par = factor(par, levels = par_names)) %>%
+  mutate(draws = map(files, get_theta_draws)) %>%
+  unnest() %>%
+  mutate(reduction_theta = 100 * (1 - exp(`theta`))) 
+
+# create plot
+sens_par_theta_pl <- ggplot(sens_par, aes(x = reduction_theta, y = par)) +
+  stat_pointinterval(.width = c(.8, .95), point_size = 2, shape = 21,fill = "white") +
+  geom_vline(aes(xintercept = 0), linetype = "dotted") +
+  labs(y = "Prior choice", 
+       x = "Estimated reduction in new infections with HIV (%) \n for a USD 1,000 increase in funding per infected", 
+       color = "Delay") +
+  theme_bw2() 
+
+# save plot
+save_plot(sens_par_theta_pl, "results/sens_par_theta.pdf", w = 10, h = 6)
+```
+
+
+### LOO Country
+
+- leave-one-country-out analysis
+
+```{r}
+# get posterior draws by left out country
+sens_loo <- tibble(files = list.files("fitted-models/sens/", pattern = "loo", full.names = T)) %>%
+  mutate(rcpt = stringi::stri_extract(files, regex = "(?<=-)\\w{3}(?=[[:punct:]])")) %>%
+  mutate(draws = map(files, get_theta_draws)) %>%
+  unnest() %>%
+  mutate(reduction = 100 * (1 - exp(`theta`))) %>%
+  mutate(color = 0) 
+
+# posterior draws from main model with all countries
+main_theta_loo <- fit$post_warmup_draws[,,c("theta","theta_share")] %>%
+  as_draws_df() %>%
+  data.frame() %>%
+  mutate(rcpt = "All Sub-Saharan Africa",
+         country = "All Sub-Saharan Africa", 
+         color = 1,
+         files = NA,
+         reduction = 100 * (1 - exp(`theta`))) %>%
+  data.frame() %>%
+  dplyr::select(files, rcpt, country, `theta`, .chain, .iteration, .draw, reduction, color)
+
+# combine and add country names
+sens_loo <- sens_loo %>% 
+  left_join(stan_data$dat_filt %>% group_by(rcpt, country) %>% slice(1) %>% dplyr::select(rcpt, country)) %>%
+  rbind(main_theta_loo)
+
+# create plot
+sens_loo_pl <- ggplot(sens_loo, aes(x = reduction1, y = country, color = factor(color))) +
+  stat_pointinterval(.width = c(.8, .95), shape = 21, point_size = 2, fill = "white") +
+  scale_color_manual(values = c("black", "indianred4")) +
+  geom_vline(aes(xintercept = 0), linetype = "dotted") +
+  labs(y = "Country", 
+       x = "Estimated reduction in new infections with HIV (%) \n for a USD 1,000 increase in funding per infected") +
+  theme_bw2() +
+  theme(axis.title.y = element_blank(), legend.position = "none")
+
+# save plot
+save_plot(sens_loo_pl, "results/sens_loo_tot.pdf", w = 10, h = 16)
+```
