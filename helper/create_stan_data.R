@@ -143,9 +143,8 @@ create_stan_data <- function(
     dens[[cum_N[r]+1]] <- dat_r$fd_dens
   }
   
-  # scale control variables
+  # combine control variables
   controls <- matrix(cbind(unlist(gdp), unlist(edu), unlist(mat), unlist(dens)), ncol = 4)
-  controls <- apply(controls, 2, scale)
   
   # combine funding
   funding <- matrix(cbind(unlist(std), unlist(dom)), ncol = 2)

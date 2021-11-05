@@ -39,21 +39,23 @@ source("helper/stan_sampling.R")
 
 ```{r}
 # load preprocessed data
-df <- read.csv('data/preprocessed/data.csv', stringsAsFactors = F) %>%
-  mutate(country = ifelse(rcpt == "COG", "Republic of the Congo", ifelse(rcpt == "GMB", "Gambia", country)))
+df <- read.csv('data/preprocessed/data.csv', stringsAsFactors = F) 
+#' country = country name
 #' rcpt = ISO-3 country code
 #' year = year
-#' std = official development assistance (ODA) funding for sexually transmitted diseases
-#' dom = domestic funding for HIV
-#' edu = education
-#' gdp = log gross domestic product per capita
-#' pop = population
-#' dens = log population density
-#' mat = maternal mortality per capita
-#' fd_* = first difference of control variables (log changes for all but education)
 #' hiv_new_* = new infections with HIV by age group
 #' hiv_living_* = people living with HIV by age group
 #' hiv_incidence_* = incidence with HIV by age group
+#' std = official development assistance (ODA) funding for sexually transmitted diseases
+#' dom = domestic funding for HIV
+#' edu = education
+#' gdp = gross domestic product per capita
+#' pop = population
+#' dens = log population density
+#' mat = maternal mortality per capita
+#' fd_* = first difference of control variables
+#' pop30_est = median estimate from the UN for the population in 2030
+
 
 # filter data with low incidence or too few years of observation
 # create data list as input to STAN
@@ -89,7 +91,7 @@ quantile(descr_tbl$tot_fund_pipa, .25); mean(descr_tbl$tot_fund_pipa); quantile(
 descr_tbl <- descr_tbl %>%
   left_join(df %>% group_by(rcpt) %>% slice(1) %>% dplyr::select(rcpt, country))  %>%
   dplyr::select(rcpt, country, d_hiv, tot_aid, tot_dom) %>%
-  mutate_at(vars(tot_aid, tot_dom), function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) %>%
+  mutate_at(vars(tot_aid, tot_dom), function(x) format(x * 1e3, big.mark = ",", scientific = FALSE)) %>%
   mutate(d_hiv = format(round(d_hiv, 1), nsmall = 1)) %>%
   mutate(d_hiv = ifelse(grepl("-", d_hiv), gsub("-", "$-$", d_hiv), paste0("$\\hphantom{-}$", d_hiv))) %>%
   mutate(d_hiv = ifelse(rcpt == "MUS", paste0(d_hiv, "$^{\\dagger}$"), d_hiv))
@@ -124,25 +126,25 @@ descr_df <- stan_data$dat_filt %>%
 
 # highlight top/bottom countries
 highest_hiv <- descr_df %>% 
-  dplyr::filter(year == 2018) %>% 
+  dplyr::filter(year == 2017) %>% 
   arrange(desc(hiv)) %>% 
   dplyr::select(country) %>% 
   slice(1:8) %>% 
   unlist
 highest_tf <- descr_df %>% 
-  dplyr::filter(year == 2018) %>% 
+  dplyr::filter(year == 2017) %>% 
   arrange(desc(tf_pc)) %>% 
   dplyr::select(country) %>% 
   slice(1:8) %>% 
   unlist
 highest_aid <- descr_df %>% 
-  dplyr::filter(year == 2018) %>% 
+  dplyr::filter(year == 2017) %>% 
   arrange(desc(aid_pc)) %>% 
   dplyr::select(country) %>% 
   slice(1:8) %>% 
   unlist
 highest_dom <- descr_df %>% 
-  dplyr::filter(year == 2018) %>% 
+  dplyr::filter(year == 2017) %>% 
   arrange(desc(dom_pc)) %>% 
   dplyr::select(country) %>% 
   slice(1:8) %>% 
@@ -186,8 +188,8 @@ descr_funding_pl <- ggplot(descr_df, aes(x = year, y = tf_pc, group = country, c
   geom_line() +
   geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt_tf)), aes(label = country), 
                   size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
-  scale_y_continuous(expand = c(0,0), breaks = seq(0, 2, .5), limits = c(0, 1.7),
-                     labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 2, .5), limits = c(0, 1.8),
+                     labels = function(x) format(x * 1e3, big.mark = ",", scientific = FALSE)) +
   scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
   coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
   labs(y = "Funding for HIV (USD per infected)") +
@@ -203,8 +205,8 @@ descr_aid_pl <- ggplot(descr_df, aes(x = year, y = aid_pc, group = country, colo
   geom_line() +
   geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt_aid)), aes(label = country), 
                   size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
-  scale_y_continuous(expand = c(0,0), breaks = seq(0, 1.25, .25), limits = c(0, 1.25),
-                     labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 1.50, .25), limits = c(0, 1.50),
+                     labels = function(x) format(x * 1e3, big.mark = ",", scientific = FALSE)) +
   scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
   coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
   labs(y = "ODA for HIV (USD per infected)") +
@@ -220,7 +222,7 @@ descr_dom_pl <- ggplot(descr_df, aes(x = year, y = dom_pc, group = country, colo
   geom_text_repel(data = subset(descr_df, year == max(year) & !is.na(sub_rcpt_dom)), aes(label = country), 
                   size = 6 / cm(1), force = 1, direction = "y", nudge_x = 1, segment.color = NA) +
   scale_y_continuous(expand = c(0,0), breaks = seq(0, 1, .25), limits = c(0, 1),
-                     labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+                     labels = function(x) format(x * 1e3, big.mark = ",", scientific = FALSE)) +
   scale_x_continuous(expand = c(0,0), breaks = seq(min(descr_df$year), max(descr_df$year), 3)) +
   coord_cartesian(xlim = c(min(descr_df$year), max(descr_df$year + 2))) +
   labs(y = "Domestic funding for HIV (USD per infected)") +
@@ -268,7 +270,7 @@ lin_mod <- brm(d_hiv ~ tot_fund, data = df_summary, seed = 12345)
 
 # add linear fitted draws
 lin_mod_fit <- df_summary %>%
-  data_grid(tot_fund = seq_range(c(0, 1.2) * 1000, 101)) %>%
+  data_grid(tot_fund = seq_range(c(0, 1.3) * 1000, 101)) %>%
   add_linpred_draws(lin_mod, ndraws = 4000) 
 
 # create plot
@@ -281,9 +283,9 @@ cor_pl <- ggplot() +
                   size = 6 / cm(1)) +
   scale_size(breaks = seq(0, 30, 6)) +
   geom_hline(aes(yintercept = 0), linetype = "dotted") +
-  scale_x_continuous(breaks = seq(0, 1.25, 0.25) * 1000, limits = c(0, 1.2) * 1000, expand = c(0,0),
-                     labels=function(x) format(x, big.mark = ".", scientific = FALSE)) +
-  scale_y_continuous(breaks = seq(-150, 25, 25), limits = c(-140, 25), expand = c(0,0)) +
+  scale_x_continuous(breaks = seq(0, 1.25, 0.25) * 1000, limits = c(0, 1.30) * 1000, expand = c(0,0),
+                     labels=function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  scale_y_continuous(breaks = seq(-150, 50, 25), limits = c(-140, 40), expand = c(0,0)) +
   labs(x = "Total funding for HIV control measures (USD per infected)", 
        y = "Change in number of new infections with HIV (%)",
        size = "HIV in 2003 (new infections per 1,000 population)",
@@ -539,7 +541,7 @@ av_inf_tot_pl <- av_inf_df %>%
   stat_pointinterval(shape = 21, fill = "white", point_size = 2, .width = c(0.8, 0.95)) +
   geom_vline(aes(xintercept = 0), linetype = "dotted", color = "grey") +
   scale_color_viridis_c(breaks = seq(0, 15, 5), limits = c(0, 15), 
-                        labels = function(x) format(x * 1e3, big.mark = ".", scientific = FALSE)) +
+                        labels = function(x) format(x * 1e3, big.mark = ",", scientific = FALSE)) +
   labs(x = "Estimated expected total number of avoided infections with HIV (%)", 
        color = "Estimated expected total active funding for HIV (USD per infected)") +
   theme_bw2() +
@@ -570,7 +572,7 @@ incidence_start <- stan_data$dat_filt %>%
   mutate(hiv_inc_sta = hiv_inci) %>%
   rename(hiv_new_sta = hiv_new)
 
-# current/latest incidence (for almost all countries this is 2018)
+# current/latest incidence (for almost all countries this is 2017)
 incidence_current <- stan_data$dat_filt %>% 
   dplyr::select(rcpt, country, year, hiv_new, hiv_inci, pop) %>%
   group_by(rcpt, country) %>%
@@ -579,25 +581,18 @@ incidence_current <- stan_data$dat_filt %>%
   mutate(hiv_inc_cur = hiv_inci) %>%
   rename(hiv_new_cur = hiv_new)
 
-# funding between 2010 and 2018
+# funding between 2010 and 2017
 funding_so_far <- df_model %>%
-  dplyr::filter(year >= 2010 & year <= 2018) %>%
+  dplyr::filter(year >= 2010 & year <= 2017) %>%
   group_by(rcpt) %>%
   summarize(active_funding_per_infected = 1 / 1e3 * mean( (pred_active_std.mean + pred_active_dom.mean) / hiv_living))
 
 
 # population projections for 2030 from the United Nations
-ppop30_raw <- read_csv("data/raw/un_pop_proj_2030.csv") %>%
-  mutate(country = ifelse(country == "Côte d'Ivoire", "Cote d'Ivoire",
-                          ifelse(country == "Congo", "Republic of the Congo",
-                                  ifelse(country == "United Republic of Tanzania", "Tanzania", country)))) %>%
-  mutate(medium_estimate_2030 = medium_estimate_2030 * 1e3)
-ppop30 <- stan_data$dat_filt %>%
-  dplyr::select(rcpt, country) %>%
-  group_by(rcpt, country) %>%
-  slice(1) %>%
+ppop30 <- df %>% 
+  group_by(rcpt) %>%
+  summarize(pop_tar = pop30_est[1]) %>%
   ungroup()
-ppop30 <- left_join(ppop30, ppop30_raw)
 
 # target incidence in 2030
 # target reduction is 90% between 2010 and 2030
@@ -606,22 +601,22 @@ annual_reduction <- - log(0.1) / 20
 incidence_target <- data.frame(
   rcpt = incidence_start$rcpt,
   country = incidence_start$country,
-  pop_tar = ppop30$medium_estimate_2030,
   reduction = exp(- annual_reduction * (2030 - incidence_start$year))
 ) %>%
+  left_join(ppop30) %>%
   mutate(hiv_new_tar = incidence_start$hiv_new_sta * reduction) %>%
   mutate(hiv_inc_tar = hiv_new_tar / pop_tar * 1e3)
 
 # projections of annual funding needed to achieve target
-funding_needed <- (log(incidence_target$hiv_new_tar / incidence_current$hiv_new_cur)) / (mean_effect * 12)
+funding_needed <- (log(incidence_target$hiv_new_tar / incidence_current$hiv_new_cur)) / (mean_effect * 13)
 
 # combine
 fund_to_end_hiv <- data.frame(
   rcpt = incidence_target$rcpt,
-  country = ppop30$country,
+  country = incidence_target$country,
   current_hiv_inc = incidence_current$hiv_inc_cur,
   target_hiv_inc = incidence_target$hiv_inc_tar,
-  funding_2010_2018 = funding_so_far$active_funding_per_infected,
+  funding_2010_2017 = funding_so_far$active_funding_per_infected,
   funding_to_end_hiv = funding_needed
 )
 
@@ -632,7 +627,7 @@ filt_rcpt <- df %>%
   slice(1) %>%
   ungroup() %>%
   dplyr::select(rcpt, country) %>%
-  mutate(current_hiv_inc = NA, target_hiv_inc = NA, funding_2010_2018 = NA, funding_to_end_hiv = NA)
+  mutate(current_hiv_inc = NA, target_hiv_inc = NA, funding_2010_2017 = NA, funding_to_end_hiv = NA)
 fund_to_end_hiv <- rbind(fund_to_end_hiv, filt_rcpt)
 
 # save data for plotting in Python
@@ -641,10 +636,10 @@ write_csv(fund_to_end_hiv, file = "results/funding_needed_to_end_hiv.csv")
 # examples
 fund_to_end_hiv %>%
   dplyr::filter(country %in% c("Sierra Leone", "Tanzania", "Rwanda")) %>%
-  mutate_at(vars(funding_2010_2018, funding_to_end_hiv), function(x) round(x * 1000))
+  mutate_at(vars(funding_2010_2017, funding_to_end_hiv), function(x) round(x * 1000))
 
 # number of countries who need more than the double of funding
-sum((fund_to_end_hiv$funding_to_end_hiv / fund_to_end_hiv$funding_2010_2018) > 2, na.rm = T)
+sum((fund_to_end_hiv$funding_to_end_hiv / fund_to_end_hiv$funding_2010_2017) > 2, na.rm = T)
 ```
 
 
@@ -787,9 +782,11 @@ sens_par <- tibble(files = list.files("fitted-models/sens/", pattern = "par", fu
   mutate(par = stringi::stri_extract(files, regex = "(?<=par-)\\w.*(?=[[:punct:]])")) %>%
   mutate(par = dplyr::recode(par, !!! par_names)) %>%
   mutate(par = factor(par, levels = par_names)) %>%
-  mutate(draws = map(files, get_theta_draws)) %>%
+  mutate(draws1 = map(files, get_theta_draws)) %>%
+  mutate(draws2 = map(files, get_theta_draws, "theta_share")) %>%
   unnest() %>%
-  mutate(reduction_theta = 100 * (1 - exp(`theta`))) 
+  mutate(reduction_theta = 100 * (1 - exp(`theta`)),
+         reduction_theta_share = 100 * (1 - exp(`theta_share`))) 
 
 # create plot
 sens_par_theta_pl <- ggplot(sens_par, aes(x = reduction_theta, y = par)) +
