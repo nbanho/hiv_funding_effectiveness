@@ -10,11 +10,11 @@ A preprocessed data file is provided in `data/preprocessed/data.csv`. The file i
 - std = official development assistance (ODA) funding for sexually transmitted diseases (USD)
 - dom = domestic funding for HIV (USD)
 - edu = education
-- gdp = gross domestic product (USD per capita)
+- gdp = log gross domestic product (USD per capita)
 - pop = population
 - dens = log population density
 - mat = maternal mortality per capita
-- fd_* = first difference of control variables
+- fd_* = first difference of control variables (log changes for all but education)
 - hiv_new_* = new infections with HIV by age group
 - hiv_living_* = people living with HIV by age group
 - hiv_incidence_* = incidence with HIV by age group (new infections per 1,000 population)
