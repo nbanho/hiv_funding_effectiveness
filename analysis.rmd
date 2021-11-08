@@ -427,7 +427,7 @@ xtable::print.xtable(
 )
 
 # influential observations
-plot_influential.ragged_mat(fit, nrow(stan_data$dat_model), stan_data$dat_model$year, stan_data$dat_model$rcpt,
+plot_influential.ragged_mat(fit, nrow(stan_data$dat_model), stan_data$dat_model$year, stan_data$dat_model$country,
                             "results/influential.pdf", w = 16, h = 24)
 ```
 
@@ -833,7 +833,7 @@ sens_loo <- sens_loo %>%
   rbind(main_theta_loo)
 
 # create plot
-sens_loo_pl <- ggplot(sens_loo, aes(x = reduction1, y = country, color = factor(color))) +
+sens_loo_pl <- ggplot(sens_loo, aes(x = reduction, y = country, color = factor(color))) +
   stat_pointinterval(.width = c(.8, .95), shape = 21, point_size = 2, fill = "white") +
   scale_color_manual(values = c("black", "indianred4")) +
   geom_vline(aes(xintercept = 0), linetype = "dotted") +
