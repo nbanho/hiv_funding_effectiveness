@@ -4,9 +4,12 @@ This repository contains code and data to reproduce the results from the paper "
 
 ## Data 
 
-A preprocessed data file is provided in `data/preprocessed/data.csv`. The file includes the following variables:
+A preprocessed data file containing all data used for analysis is provided in `data/preprocessed/data.csv`. The file includes the following variables:
 - rcpt = ISO-3 country code
 - year = year
+- hiv_new_* = new infections with HIV by age group
+- hiv_living_* = people living with HIV by age group
+- hiv_incidence_* = incidence with HIV by age group (new infections per 1,000 population)
 - std = official development assistance (ODA) funding for sexually transmitted diseases (USD)
 - dom = domestic funding for HIV (USD)
 - edu = education
@@ -15,9 +18,9 @@ A preprocessed data file is provided in `data/preprocessed/data.csv`. The file i
 - dens = log population density
 - mat = maternal mortality per capita
 - fd_* = first difference of control variables (log changes for all but education)
-- hiv_new_* = new infections with HIV by age group
-- hiv_living_* = people living with HIV by age group
-- hiv_incidence_* = incidence with HIV by age group (new infections per 1,000 population)
+- pop30_est = median estimate from the UN for the population in 2030
+
+The raw data is provided in the folder data `data/raw/`. Running `preprocessing.r` generates all preprocessed data files in the folder `data/preprocessed`.
 
 
 ## Model
